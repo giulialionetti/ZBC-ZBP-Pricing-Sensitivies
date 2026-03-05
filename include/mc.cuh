@@ -21,6 +21,7 @@ __constant__ float device_dt;
 __constant__ float device_mean_reversion_factor;
 __constant__ float device_std_gaussian_shock;
 __constant__ float device_drift_table[N_STEPS];
+__constant__ float device_sensitivity_drift_table[N_STEPS];
 
 void init_device_constants(){
     float host_mean_reversion_factor = expf(-host_a * host_dt);
@@ -30,9 +31,17 @@ void init_device_constants(){
     // therefore the drift always pulls r back to r0
     float host_drift_term = host_r0 * (1.0f - host_mean_reversion_factor);
     float host_drift_table[N_STEPS];
+    float host_sensitivity_drift_table[N_STEPS];
 
     for(int i=0; i< N_STEPS; i++){
         host_drift_table[i] = host_drift_term;
+
+        float s = i * host_dt;
+        float s_plus_dt = i * host_dt + host_dt;
+
+        host_sensitivity_drift_table[i] = (2.0f * host_sigma * expf(-host_a * s_plus_dt) * 
+                                      (coshf(host_a * s_plus_dt) - coshf(host_a * s))) 
+                                      / (host_a * host_a);
     }
 
     cudaMemcpyToSymbol(device_a, &host_a, sizeof(float));
@@ -42,7 +51,35 @@ void init_device_constants(){
     cudaMemcpyToSymbol(device_mean_reversion_factor, &host_mean_reversion_factor, sizeof(float));
     cudaMemcpyToSymbol(device_std_gaussian_shock, &host_std_gaussian_shock, sizeof(float));
     cudaMemcpyToSymbol(device_drift_table, host_drift_table, N_STEPS * sizeof(float));
+    cudaMemcpyToSymbol(device_sensitivity_drift_table, host_sensitivity_drift_table, 
+                   N_STEPS * sizeof(float));
 
+}
+
+__global__ void init_rng(curandState* states, unsigned long seed) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
+}
+
+__device__ inline void evolve_short_rate(float& r_step_i, 
+ float& discount_factor_integral, float drift_step_i, float G){
+
+    float r_step_i_plus_one = r_step_i * device_mean_reversion_factor +
+                     drift_step_i + device_std_gaussian_shock * G;
+
+    discount_factor_integral += 0.5f * (r_step_i + r_step_i_plus_one) * device_dt;
+    r_step_i = r_step_i_plus_one;
+    
+}
+
+__device__ inline void evolve_short_rate_derivative(float& drdsigma_step_i,
+     float& drdsigma_integral, float drift_sensitivity_step_i, float G){
+        
+        float drdsigma_step_i_plus_one = drdsigma_step_i * device_mean_reversion_factor +
+        drift_sensitivity_step_i + (device_std_gaussian_shock/ device_sigma) *G;
+
+        drdsigma_integral += 0.5f * (drdsigma_step_i + drdsigma_step_i_plus_one) * device_dt;
+        drdsigma_step_i = drdsigma_step_i_plus_one;
 }
 
 #endif // MC_CUH
