@@ -295,8 +295,6 @@ __global__ void mc_payer_swaption_volga(float* swaption_estimator,
         MarketCurve curve{device_a, device_sigma, d_P_market, d_f_market,
                           MAT_SPACING, N_MAT};
 
-        float srvn_T = (1.0f - expf(-2.0f * device_a * T)) / (2.0f * device_a);
-
         float swap_value     = 0.0f;
         float dswap_dsigma   = 0.0f;
         float d2swap_dsigma2 = 0.0f;
