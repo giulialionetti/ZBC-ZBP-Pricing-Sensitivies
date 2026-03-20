@@ -158,18 +158,4 @@ inline float analytical_payer_swaption_volga(float T, const float* tenor_dates, 
     return volga;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #endif // SWAPTIONS_CUH

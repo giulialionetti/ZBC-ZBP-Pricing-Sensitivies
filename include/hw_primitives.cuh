@@ -225,14 +225,17 @@ __host__ __device__ inline PricingState make_pricing_state(float t, float T,
     ps.sigma_p  = sigma
                   * sqrtf((1.0f - expf(-2.0f * a * (T - t))) / (2.0f * a))
                   * B_TS;
-    ps.dsp_ds   = ps.sigma_p / sigma;
 
-    ps.h        = (1.0f / ps.sigma_p)
+    ps.dsp_ds   = ps.sigma_p / sigma; // dσ_p/dσ = sigma_p/σ
+
+    ps.h        = (1.0f / ps.sigma_p) 
                   * logf(ps.bS.P / (ps.bT.P * K))
                   + ps.sigma_p / 2.0f;
+    
+    // phi(h) = (1/sqrt(2pi))*exp(-h^2/2)
     ps.phi_h    = expf(-ps.h * ps.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
 
-   
+    // P(t,S)phi(h) = KP(t, T)phi(h - σ_p)
     ps.PS_phi_h = ps.bS.P * ps.phi_h;
 
     return ps;

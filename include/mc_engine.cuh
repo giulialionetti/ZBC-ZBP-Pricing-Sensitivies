@@ -116,11 +116,6 @@ void init_device_constants_calibrated(const float* h_f){
                        N_STEPS * sizeof(float));
 }
 
-void init_swaption_constants(const float* tenor_dates, const float* c, int n_tenors){
-    cudaMemcpyToSymbol(device_tenor_dates, tenor_dates, n_tenors * sizeof(float));
-    cudaMemcpyToSymbol(device_c,           c,           n_tenors * sizeof(float));
-    cudaMemcpyToSymbol(device_n_tenors,    &n_tenors,   sizeof(int));
-}
 
 __global__ void init_rng(curandState* states, unsigned long seed){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
