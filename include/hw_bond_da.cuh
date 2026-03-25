@@ -55,4 +55,16 @@ __host__ __device__ inline float d2P_da2(float P, float rt,
     return P * (dlnP * dlnP + d2lnP);
 }
 
+__host__ __device__ inline float dsigmap_da(float t, float T, float S,
+                                             float a, float sigma_p,
+                                             float sigma){
+    float tau       = T - t;
+    float e_2atau   = expf(-2.0f * a * tau);
+    float srvn_tau  = (1.0f - e_2atau) / (2.0f * a);
+    float dsrvn_tau = -srvn_tau / a + tau * e_2atau / a;
+    float B_TS      = B(T, S, a);
+    float dB_TS     = dB_da(T, S, a);
+    return sigma_p * (dsrvn_tau / (2.0f * srvn_tau) + dB_TS / B_TS);
+}s
+
 #endif // HW_BOND_DERIV_A_CUH

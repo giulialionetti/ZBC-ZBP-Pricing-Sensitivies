@@ -127,6 +127,45 @@ __host__ __device__ inline float gamma_zbp(const EuroOption& o,
          + o.X * d2P_dr2(B(t, T, a), o.P_T);
 }
 
+__host__ __device__ inline float dZBC_da(const EuroOption& o,
+                                          float t, float T, float S,
+                                          float a, float sigma, float rt,
+                                          const float* P0, const float* f0){
+    float phi_h    = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    float B_S      = B(t, S, a);
+    float B_T      = B(t, T, a);
+    float dB_S     = dB_da(t, S, a);
+    float dB_T     = dB_da(t, T, a);
+    float f0t      = interpolate(f0, t);
+    float dlnA_S   = dlnA_da(t, S, a, sigma, f0t, B_S, dB_S);
+    float dlnA_T   = dlnA_da(t, T, a, sigma, f0t, B_T, dB_T);
+    float dP_S_da  = dP_da(o.P_S, rt, dB_S, dlnA_S);
+    float dP_T_da  = dP_da(o.P_T, rt, dB_T, dlnA_T);
+    float dsigmap  = dsp_da(o, t, T, S, a);
+
+    return dP_S_da * normcdff(o.h)
+         - o.X * dP_T_da * normcdff(o.h - o.sigma_p)
+         + o.P_S * phi_h * dsigmap;
+}
+
+__host__ __device__ inline float dZBP_da(const EuroOption& o,
+                                          float t, float T, float S,
+                                          float a, float sigma, float rt,
+                                          const float* P0, const float* f0){
+    float B_S     = B(t, S, a);
+    float B_T     = B(t, T, a);
+    float dB_S    = dB_da(t, S, a);
+    float dB_T    = dB_da(t, T, a);
+    float f0t     = interpolate(f0, t);
+    float dlnA_S  = dlnA_da(t, S, a, sigma, f0t, B_S, dB_S);
+    float dlnA_T  = dlnA_da(t, T, a, sigma, f0t, B_T, dB_T);
+    float dP_S_da = dP_da(o.P_S, rt, dB_S, dlnA_S);
+    float dP_T_da = dP_da(o.P_T, rt, dB_T, dlnA_T);
+
+    return dZBC_da(o, t, T, S, a, sigma, rt, P0, f0)
+         - dP_S_da
+         + o.X * dP_T_da;
+}
 
 
 #endif // HW_OPTION_SENSITIVITIES_CUH
