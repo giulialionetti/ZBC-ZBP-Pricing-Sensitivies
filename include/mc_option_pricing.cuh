@@ -65,12 +65,12 @@ __global__ void simulate_option(float* out,
         s_vega_zbp [threadIdx.x] = -disc * dP_S_ds * itm_zbp
                                   - dr_dsigma_integral * disc * pay_zbp;
 
-        s_volga_zbc[threadIdx.x] = disc * d2P_S_ds2 * itm_zbc
-                          - dr_dsigma_integral * disc * dP_S_ds * itm_zbc
+        s_volga_zbc[threadIdx.x] = - disc * d2P_S_ds2 * itm_zbc
+                          - 2.0f * dr_dsigma_integral * disc * dP_S_ds * itm_zbc
                           + dr_dsigma_integral * dr_dsigma_integral * disc * pay_zbc;
 
         s_volga_zbp[threadIdx.x] = - disc * d2P_S_ds2 * itm_zbp
-                          - dr_dsigma_integral * disc * dP_S_ds * itm_zbp
+                          - 2.0f * dr_dsigma_integral * disc * dP_S_ds * itm_zbp
                           + dr_dsigma_integral * dr_dsigma_integral * disc * pay_zbp;
         states[id] = local_state;
 
