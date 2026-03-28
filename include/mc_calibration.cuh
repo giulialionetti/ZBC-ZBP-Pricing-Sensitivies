@@ -7,13 +7,11 @@ __constant__ float device_drift_table[N_STEPS];
 __constant__ float device_sensitivity_drift_table[N_STEPS];
 
 
-
-
 inline void forward_rate(const float* log_P, float* f0){
-    f0[0] = -(log_P[1] - log_P[0]) / MAT_SPACING;
+    f0[0] = -(-3.0f*log_P[0] + 4.0f*log_P[1] - log_P[2]) / (2.0f * MAT_SPACING);
     for(int i = 1; i < N_MAT - 1; i++)
-       f0[0]       = -(-3*log_P[0] + 4*log_P[1]   - log_P[2])   / (2.0f * MAT_SPACING);
-       f0[N_MAT-1] = -(log_P[N_MAT-3] - 4*log_P[N_MAT-2] + 3*log_P[N_MAT-1]) / (2.0f * MAT_SPACING);
+        f0[i] = -(log_P[i+1] - log_P[i-1]) / (2.0f * MAT_SPACING);
+    f0[N_MAT-1] = -(log_P[N_MAT-3] - 4.0f*log_P[N_MAT-2] + 3.0f*log_P[N_MAT-1]) / (2.0f * MAT_SPACING);
 }
 
 inline void theta(const float* log_P, const float* f0,
