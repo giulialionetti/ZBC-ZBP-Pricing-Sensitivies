@@ -12,5 +12,6 @@
 #define NB          ((N_PATHS + NTPB - 1) / NTPB)
 
 const float host_dt = T_FINAL / N_STEPS;
+#define INV_SQRT_2PI 0.39894228040143267f  // 1 / sqrt(2*pi)
 
 #endif // HW_CONSTANTS_CUH

@@ -20,6 +20,7 @@ __host__ __device__ inline float A(float b, float t, float a, float sigma,
 }
 
 __host__ __device__ inline float interpolate(const float* data, float t){
+    if(t <= 0.0f) return data[0];
     int   idx   = (int)(t / MAT_SPACING);
     if(idx >= N_MAT - 1) return data[N_MAT - 1];
     float alpha = t / MAT_SPACING - idx;

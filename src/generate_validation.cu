@@ -6,20 +6,19 @@
 #include <cstdlib>
 #include <ctime>
 #include <cmath>
-
-static float rand_uniform(float lo, float hi) {
-    return lo + (hi - lo) * (float)rand() / (float)RAND_MAX;
-}
-
-static int rand_int(int lo, int hi) {
-    return lo + rand() % (hi - lo + 1);
-}
+#include <random>
 
 int main(int argc, char** argv) {
     const int   N_SAMPLES = (argc > 1) ? atoi(argv[1]) : 500;
     const char* out_path  = (argc > 2) ? argv[2]       : "data/swaption_validation.csv";
 
-    srand((unsigned)time(NULL) + 99999);
+    std::mt19937 rng((unsigned long)time(NULL) + 99999UL);
+    auto rand_uniform = [&](float lo, float hi) {
+        return lo + (hi - lo) * std::uniform_real_distribution<float>(0.f, 1.f)(rng);
+    };
+    auto rand_int = [&](int lo, int hi) {
+        return lo + std::uniform_int_distribution<int>(0, hi - lo)(rng);
+    };
 
     curandState* d_states;
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
@@ -33,7 +32,6 @@ int main(int argc, char** argv) {
     float* d_sens_drift;
     alloc_drift_tables(&d_drift, &d_sens_drift);
 
-    
     const float eps_v = 0.01f;
     float* d_drift_up;   float* d_sens_drift_up;
     float* d_drift_down; float* d_sens_drift_down;
@@ -54,10 +52,15 @@ int main(int argc, char** argv) {
     unsigned long base_seed = (unsigned long)time(NULL) + 99999UL;
     const float   eps_r     = 0.001f;
 
-    for (int s = 0; s < N_SAMPLES; s++) {
+    int n_written  = 0;
+    int n_rejected = 0;
+    int s          = 0;
 
+    while (n_written < N_SAMPLES) {
+
+        // ── Fix 1: sigma floor matches training data ──────────────────────
         float a     = rand_uniform(0.10f,  2.00f);
-        float sigma = rand_uniform(0.01f,  0.30f);
+        float sigma = rand_uniform(0.02f,  0.30f);
         float r0    = rand_uniform(0.001f, 0.05f);
 
         int   swap_length = rand_int(1, 4);
@@ -69,7 +72,6 @@ int main(int argc, char** argv) {
         for (int i = 0; i < n_tenors; i++)
             tenor_dates[i] = T + (float)(i + 1);
 
-      
         HWParams p = params(a, sigma);
 
         init_drift(a, sigma, r0, d_drift, d_sens_drift);
@@ -85,8 +87,11 @@ int main(int argc, char** argv) {
         float f0[N_MAT];
         calibrate(h_P, f0, a, sigma, d_drift, d_sens_drift);
 
-        
-        float K_atm     = par_swap_rate(T, tenor_dates, n_tenors, h_P);
+        float K_atm = par_swap_rate(T, tenor_dates, n_tenors, h_P);
+
+        // ── Fix 2: skip degenerate curves ────────────────────────────────
+        if (K_atm <= 0.0f) { n_rejected++; s++; continue; }
+
         float moneyness = rand_uniform(0.80f, 1.20f);
         float K         = K_atm * moneyness;
 
@@ -95,12 +100,24 @@ int main(int argc, char** argv) {
             c[i] = K;
         c[n_tenors - 1] += 1.0f;
 
+        // ── Analytical Greeks — check before running MC ───────────────────
+        float an_price = analytical_swaption      (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
+        float an_vega  = analytical_swaption_vega (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
+        float an_volga = analytical_swaption_volga(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
+        float an_delta = analytical_swaption_delta(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
+        float an_gamma = analytical_swaption_gamma(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
+
+        // ── Fix 3: skip degenerate Greeks before running expensive MC ─────
+        if (fabsf(an_volga) > 5.0f || fabsf(an_gamma) > 5.0f) {
+            n_rejected++; s++; continue;
+        }
+
         cudaMemcpy(d_P0,          h_P,         N_MAT    * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_f0,          f0,          N_MAT    * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_tenor_dates, tenor_dates, n_tenors * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_c,           c,           n_tenors * sizeof(float), cudaMemcpyHostToDevice);
 
-     
+        // ── MC price + vega ───────────────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
                                           + 1UL * (unsigned long)N_SAMPLES,
@@ -112,13 +129,12 @@ int main(int argc, char** argv) {
                                          T, r0,
                                          d_tenor_dates, d_c, n_tenors);
         cudaDeviceSynchronize();
-
         float h_pv[2];
         cudaMemcpy(h_pv, d_out2, 2 * sizeof(float), cudaMemcpyDeviceToHost);
         float mc_price = h_pv[0] / N_PATHS;
         float mc_vega  = h_pv[1] / N_PATHS;
 
-     
+        // ── MC delta ──────────────────────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
                                           + 2UL * (unsigned long)N_SAMPLES,
@@ -130,12 +146,11 @@ int main(int argc, char** argv) {
                                                T, r0,
                                                d_tenor_dates, d_c, n_tenors);
         cudaDeviceSynchronize();
-
         float h_delta_mc;
         cudaMemcpy(&h_delta_mc, d_out1, sizeof(float), cudaMemcpyDeviceToHost);
         float mc_delta = h_delta_mc / N_PATHS;
 
-       
+        // ── MC gamma ──────────────────────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
                                           + 3UL * (unsigned long)N_SAMPLES,
@@ -148,12 +163,11 @@ int main(int argc, char** argv) {
                                                d_tenor_dates, d_c, n_tenors,
                                                eps_r);
         cudaDeviceSynchronize();
-
         float h_gamma_mc;
         cudaMemcpy(&h_gamma_mc, d_out1, sizeof(float), cudaMemcpyDeviceToHost);
         float mc_gamma = h_gamma_mc / (N_PATHS * eps_r * eps_r);
 
-        
+        // ── MC volga ──────────────────────────────────────────────────────
         HWParams p_vup   = params(a, sigma + eps_v);
         HWParams p_vdown = params(a, sigma - eps_v);
         float f0_vup[N_MAT], f0_vdown[N_MAT];
@@ -183,13 +197,7 @@ int main(int argc, char** argv) {
         cudaMemcpy(&h_volga_mc, d_out1, sizeof(float), cudaMemcpyDeviceToHost);
         float mc_volga = h_volga_mc / N_PATHS;
 
-        
-        float an_price = analytical_swaption      (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
-        float an_vega  = analytical_swaption_vega (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
-        float an_volga = analytical_swaption_volga(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
-        float an_delta = analytical_swaption_delta(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
-        float an_gamma = analytical_swaption_gamma(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
-
+        // ── Write ─────────────────────────────────────────────────────────
         fprintf(fp, "%.6f,%.6f,%.6f,%.6f,%d,%.6f,"
                     "%.8f,%.8f,%.8f,%.8f,%.8f,"
                     "%.8f,%.8f,%.8f,%.8f,%.8f\n",
@@ -197,12 +205,17 @@ int main(int argc, char** argv) {
                 mc_price, mc_vega, mc_delta, mc_gamma, mc_volga,
                 an_price, an_vega, an_volga, an_delta, an_gamma);
 
-        if ((s + 1) % 100 == 0)
-            fprintf(stderr, "  %d / %d\n", s + 1, N_SAMPLES);
+        n_written++;
+        s++;
+
+        if (n_written % 100 == 0)
+            fprintf(stderr, "  %d / %d  (rejected: %d)\n",
+                    n_written, N_SAMPLES, n_rejected);
     }
 
     fclose(fp);
-    fprintf(stderr, "Done: %d samples written to %s\n", N_SAMPLES, out_path);
+    fprintf(stderr, "Done: %d samples written to %s  (rejected: %d)\n",
+            N_SAMPLES, out_path, n_rejected);
 
     free_drift_tables(d_drift,      d_sens_drift);
     free_drift_tables(d_drift_up,   d_sens_drift_up);

@@ -12,7 +12,7 @@ __host__ __device__ inline float vega_zbc(const EuroOption& o,
                                            float a, float sigma){
 
     // probability density function of a Normal Gaussian                                       
-    float phi_h    = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    float phi_h    = expf(-o.h * o.h * 0.5f) * INV_SQRT_2PI;
     
     float PS_phi_h = o.P_S * phi_h; // P(t, S)*phi(h)
 
@@ -48,7 +48,7 @@ __host__ __device__ inline float volga_zbc(const EuroOption& o,
     float B_S       = B(t, S, a);
     float B_T       = B(t, T, a);
     float dsp_ds    = o.sigma_p / sigma;
-    float phi_h     = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    float phi_h     = expf(-o.h * o.h * 0.5f) * INV_SQRT_2PI;
    //  float phi_h_sp  = expf(-(o.h - o.sigma_p) * (o.h - o.sigma_p) * 0.5f)
                    // / sqrtf(2.0f * 3.14159265f); // phi(h- sigma_p)
 
@@ -112,7 +112,7 @@ __host__ __device__ inline float gamma_zbc(const EuroOption& o,
                                             float a){
     float B_S      = B(t, S, a);
     float B_T      = B(t, T, a);
-    float phi_h    = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    float phi_h    = expf(-o.h * o.h * 0.5f) * INV_SQRT_2PI;
 
     return d2P_dr2(B_S, o.P_S) * normcdff(o.h)
          - o.X * d2P_dr2(B_T, o.P_T) * normcdff(o.h - o.sigma_p)
@@ -131,7 +131,7 @@ __host__ __device__ inline float dZBC_da(const EuroOption& o,
                                           float t, float T, float S,
                                           float a, float sigma, float rt,
                                           const float* P0, const float* f0){
-    float phi_h    = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    float phi_h    = expf(-o.h * o.h * 0.5f) * INV_SQRT_2PI;
     float B_S      = B(t, S, a);
     float B_T      = B(t, T, a);
     float dB_S     = dB_da(t, S, a);

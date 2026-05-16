@@ -58,7 +58,7 @@ inline void upload_drift(const float* th,
         float s_plus_dt = (i + 1) * dt;
         float cosh_next = coshf(a * s_plus_dt);
         h_sens_drift[i] = one_over_a_sq * 2.0f * sigma
-                          * expf(-a * s_mid) * (cosh_next - cosh_prev);
+                * expf(-a * s_plus_dt) * (cosh_next - cosh_prev);
         cosh_prev = cosh_next;
     }
 

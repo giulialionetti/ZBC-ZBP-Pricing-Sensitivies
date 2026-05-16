@@ -18,6 +18,9 @@ __host__ __device__ inline EuroOption euro_option(const float* P0, const float* 
     float P_T     = P(P0, f0, t, T, rt, a, sigma);
     float B_TS    = B(T, S, a);
     float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T - t))) / (2.0f * a)) * B_TS;
+
+    // Floor sigma_p to prevent division by zero in all downstream Greeks
+    sigma_p = fmaxf(sigma_p, 1e-6f);
     float h       = (1.0f / sigma_p) * logf(P_S / (P_T * X)) + sigma_p / 2.0f;
 
     return {P_S, P_T, sigma_p, h, X};

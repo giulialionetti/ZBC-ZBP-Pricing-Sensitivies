@@ -1,8 +1,8 @@
 import argparse
 import os
 from typing import TypedDict
-import torch
-import torch.nn as nn
+import torch # type: ignore
+import torch.nn as nn # type: ignore
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -11,42 +11,68 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--data", default="data/swaption_data.csv")
+parser.add_argument("--data", nargs="+", default=["data/swaption_data.csv"])
 parser.add_argument("--epochs", type=int, default=200)
 parser.add_argument("--patience", type=int, default=30)
-# Batch size lowered to 512 to prevent OOM errors, as second-order 
-# graphs consume significantly more VRAM.
 parser.add_argument("--batch", type=int, default=512)
 parser.add_argument("--lr", type=float, default=5e-4)
-parser.add_argument("--hidden",type=int, default=512)
+parser.add_argument("--hidden", type=int, default=512)
 parser.add_argument("--layers", type=int, default=5)
-parser.add_argument("--lambda_v",type=float, default=2.0)
-parser.add_argument("--lambda_d",type=float, default=2.0)
-parser.add_argument("--lambda_volga", type=float, default=1.0)
-parser.add_argument("--lambda_gamma", type=float, default=1.0)
-parser.add_argument("--clip_grad", type=float, default=1.0)
-parser.add_argument("--log_every", type=int, default=10)
-parser.add_argument("--out",default="swaption_model.pt")
-parser.add_argument("--plot",default="sobolev_loss.png")
+parser.add_argument("--lambda_v",     type=float, default=0.5)
+parser.add_argument("--lambda_d",     type=float, default=0.5)
+parser.add_argument("--lambda_volga", type=float, default=2.0)
+parser.add_argument("--lambda_gamma", type=float, default=2.0)
+parser.add_argument("--clip_grad",  type=float, default=1.0)
+parser.add_argument("--log_every",  type=int,   default=10)
+parser.add_argument("--out",  default="swaption_model.pt")
+parser.add_argument("--plot", default="sobolev_loss.png")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}" + (f"  ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else ""))
 
-df = pd.read_csv(args.data)
-df = df.dropna(subset=["price", "vega", "delta", "volga", "gamma"]).reset_index(drop=True)
-print(f"Loaded {len(df)} samples from {args.data}")
+# ── Load and concatenate all input files ─────────────────────────────────────
+frames = []
+for path in args.data:
+    f = pd.read_csv(path)
+    print(f"  {path}: {len(f)} rows")
+    frames.append(f)
+df = pd.concat(frames, ignore_index=True)
+print(f"Total rows before cleaning: {len(df)}")
+
+# ── Data cleaning ─────────────────────────────────────────────────────────────
+# 1. Drop NaN in any target column
+df = df.dropna(subset=["price", "vega", "delta", "volga", "gamma"])
+
+# 2. Drop negative or zero prices — financially meaningless
+df = df[df["price"] > 1e-3]
+
+# 3. Drop negative strikes — degenerate curve regime
+df = df[df["K"] > 0]
+
+# 4. Drop sigma below noise floor — causes sigma_p -> 0 explosion
+df = df[df["sigma"] >= 0.02]
+
+df = df[df["volga"].abs() <= 1.5]
+df = df[df["gamma"].abs() <= 1.5]
+
+ratio = df["volga"].abs() / (df["price"] + 1e-8)
+df = df[ratio <= 20]
+
+
+df = df.reset_index(drop=True)
+print(f"Total rows after  cleaning: {len(df)}")
 
 INPUT_COLS = ["a", "sigma", "r0", "T", "swap_length", "K"]
 SIGMA_IDX  = INPUT_COLS.index("sigma")
 R0_IDX     = INPUT_COLS.index("r0")
 
-X_raw  = torch.tensor(df[INPUT_COLS].values, dtype=torch.float32)
-price  = torch.tensor(df["price"].values,    dtype=torch.float32).unsqueeze(1)
-vega   = torch.tensor(df["vega"].values,     dtype=torch.float32).unsqueeze(1)
-delta  = torch.tensor(df["delta"].values,    dtype=torch.float32).unsqueeze(1)
-volga  = torch.tensor(df["volga"].values,    dtype=torch.float32).unsqueeze(1)
-gamma  = torch.tensor(df["gamma"].values,    dtype=torch.float32).unsqueeze(1)
+X_raw = torch.tensor(df[INPUT_COLS].values, dtype=torch.float32)
+price = torch.tensor(df["price"].values, dtype=torch.float32).unsqueeze(1)
+vega  = torch.tensor(df["vega"].values,  dtype=torch.float32).unsqueeze(1)
+delta = torch.tensor(df["delta"].values, dtype=torch.float32).unsqueeze(1)
+volga = torch.tensor(df["volga"].values, dtype=torch.float32).unsqueeze(1)
+gamma = torch.tensor(df["gamma"].values, dtype=torch.float32).unsqueeze(1)
 
 X_mean = X_raw.mean(0)
 X_std  = X_raw.std(0).clamp(min=1e-8)
@@ -65,6 +91,7 @@ price_mean = price[tr_idx].mean().clamp(min=1e-6)
 
 print(f"\nTraining set statistics:")
 print(f"  price_mean = {price_mean.item():.6f}")
+print(f"  price_std  = {price[tr_idx].std().item():.6f}")  
 print(f"  vega_std   = {vega_std.item():.6f}")
 print(f"  delta_std  = {delta_std.item():.6f}")
 print(f"  volga_std  = {volga_std.item():.6f}")
@@ -84,7 +111,13 @@ gamma_std  = gamma_std.to(device)
 price_mean = price_mean.to(device)
 
 class MLP(nn.Module):
-    def __init__(self, n_in: int = 6, n_hidden: int = 64, n_layers: int = 3) -> None:
+    """
+    Feedforward neural network with configurable hidden layers and units.
+    Fully connected layers with Softplus activations and a single linear output.
+    """
+    def __init__(self, n_in: int = 6,
+                 n_hidden: int = 64,
+                 n_layers: int = 3) -> None:
         super().__init__()
         layers: list[nn.Module] = [nn.Linear(n_in, n_hidden), nn.Softplus()]
         for _ in range(n_layers - 1):
@@ -133,10 +166,8 @@ def sobolev_loss(
     x_n    = x_n.detach().requires_grad_(True)
     y_pred = _base_model(x_n.to(device))
 
-    
     price_loss = (y_pred - y_price).abs().mean()
 
-    
     lambdas = torch.zeros(len(INPUT_COLS), device=x_n.device)
     lambdas[SIGMA_IDX] = args.lambda_v
     lambdas[R0_IDX]    = args.lambda_d
@@ -148,30 +179,29 @@ def sobolev_loss(
     grad = torch.autograd.grad(y_pred.sum(), x_n, create_graph=True)[0]
 
     grad_vega_scale  = 1.0 / (X_std[SIGMA_IDX] * vega_std)
-    grad_delta_scale = 1.0 / (X_std[R0_IDX] * delta_std)
+    grad_delta_scale = 1.0 / (X_std[R0_IDX]    * delta_std)
 
     net_dd = (grad[:, SIGMA_IDX:SIGMA_IDX+1] * grad_vega_scale  * u[:, SIGMA_IDX:SIGMA_IDX+1]
             + grad[:, R0_IDX:R0_IDX+1]       * grad_delta_scale * u[:, R0_IDX:R0_IDX+1])
 
-    label_dd = (u[:, SIGMA_IDX:SIGMA_IDX+1] * (y_vega / vega_std)
+    label_dd = (u[:, SIGMA_IDX:SIGMA_IDX+1] * (y_vega  / vega_std)
               + u[:, R0_IDX:R0_IDX+1]       * (y_delta / delta_std))
 
     sobolev_1_val = ((net_dd - label_dd) ** 2).mean()
 
-    
     grad_sigma = grad[:, SIGMA_IDX]
     grad_r0    = grad[:, R0_IDX]
 
-    # Differentiate the gradients w.r.t inputs again to get the Hessian diagonals.
-    # We must keep create_graph=True so PyTorch can backpropagate the final loss to model weights.
+    # Differentiate gradients w.r.t inputs again to get Hessian diagonals.
+    # create_graph=True required so PyTorch can backpropagate through the second derivative.
     grad2_sigma = torch.autograd.grad(grad_sigma.sum(), x_n, create_graph=True)[0]
-    grad2_r0    = torch.autograd.grad(grad_r0.sum(), x_n, create_graph=True)[0]
+    grad2_r0    = torch.autograd.grad(grad_r0.sum(),    x_n, create_graph=True)[0]
 
-    # Convert the normalized second derivative to raw greek space: divide by std^2
+    # Convert normalised second derivative to raw Greek space: divide by std²
     net_volga_raw = grad2_sigma[:, SIGMA_IDX:SIGMA_IDX+1] / (X_std[SIGMA_IDX] ** 2)
-    net_gamma_raw = grad2_r0[:, R0_IDX:R0_IDX+1]          / (X_std[R0_IDX] ** 2)
+    net_gamma_raw = grad2_r0[:,   R0_IDX:R0_IDX+1]        / (X_std[R0_IDX]    ** 2)
 
-    # Normalize by the variance over the training set and compute MSE
+    # Normalise by training-set std and compute MSE
     volga_loss = args.lambda_volga * (((net_volga_raw - y_volga) / volga_std) ** 2).mean()
     gamma_loss = args.lambda_gamma * (((net_gamma_raw - y_gamma) / gamma_std) ** 2).mean()
 
@@ -199,23 +229,23 @@ history: TrainingHistory = {
 
 for epoch in range(1, args.epochs + 1):
     model.train()
-    perm_tr     = tr_idx[torch.randperm(len(tr_idx))]
-    tr_total    = 0.0
-    tr_price    = 0.0
-    tr_sob_1    = 0.0
-    tr_sob_2    = 0.0
-    n_batches   = 0
+    perm_tr   = tr_idx[torch.randperm(len(tr_idx))]
+    tr_total  = 0.0
+    tr_price  = 0.0
+    tr_sob_1  = 0.0
+    tr_sob_2  = 0.0
+    n_batches = 0
 
     for i in range(0, len(perm_tr), effective_batch):
         b         = perm_tr[i : i + args.batch]
         loss_dict = sobolev_loss(X_norm[b], price[b], vega[b], delta[b], volga[b], gamma[b])
-        
+
         optimizer.zero_grad()
         loss_dict["total"].backward()
         if args.clip_grad > 0:
             nn.utils.clip_grad_norm_(_base_model.parameters(), max_norm=args.clip_grad)
         optimizer.step()
-        
+
         tr_total  += loss_dict["total"].item()
         tr_price  += loss_dict["price"].item()
         tr_sob_1  += loss_dict["sobolev_1"].item()
@@ -256,14 +286,14 @@ print(f"Restoring best weights (val_rmse={best_val_rmse:.6f})")
 model.load_state_dict(best_state)
 
 if args.plot:
-    epochs_arr   = np.array(history["epoch"])
-    price_arr    = np.array(history["train_price"])
-    sob1_arr     = np.array(history["train_sobolev_1"])
-    sob2_arr     = np.array(history["train_sobolev_2"])
+    epochs_arr = np.array(history["epoch"])
+    price_arr  = np.array(history["train_price"])
+    sob1_arr   = np.array(history["train_sobolev_1"])
+    sob2_arr   = np.array(history["train_sobolev_2"])
 
     stem, ext = os.path.splitext(args.plot)
     ext = ext or ".png"
-    
+
     def ema(x: np.ndarray, alpha: float = 0.05) -> np.ndarray:
         out = np.empty_like(x)
         out[0] = x[0]
@@ -281,16 +311,17 @@ if args.plot:
     ax.plot(epochs_arr, ema(price_arr), color="#f7c59f", linewidth=2.0, label="Price MAE")
     ax.plot(epochs_arr, ema(sob1_arr),  color="#7ec8e3", linewidth=2.0, label="1st Order Sobolev (Vega, Delta)")
     ax.plot(epochs_arr, ema(sob2_arr),  color="#a8d8a8", linewidth=2.0, label="2nd Order Sobolev (Volga, Gamma)")
-    
+
     ax.legend(facecolor="#1e2230", edgecolor="#2a2f3f", labelcolor="#c8ccd8")
-    fig.savefig(f"{stem}_components{ext}", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    fig.savefig(f"{stem}_components{ext}", dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
     plt.close(fig)
 
 torch.save({
-    "state_dict":  _base_model.state_dict(),
-    "X_mean":      X_mean.cpu(),
-    "X_std":       X_std.cpu(),
-    "input_cols":  INPUT_COLS,
-    "n_hidden":    args.hidden,
-    "n_layers":    args.layers,
+    "state_dict": _base_model.state_dict(),
+    "X_mean":     X_mean.cpu(),
+    "X_std":      X_std.cpu(),
+    "input_cols": INPUT_COLS,
+    "n_hidden":   args.hidden,
+    "n_layers":   args.layers,
 }, args.out)

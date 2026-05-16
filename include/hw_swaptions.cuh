@@ -28,15 +28,16 @@ __host__ __device__ inline float swap_value_at_r(float r, float T,
         val += c[i] * P(P0, f0, T, tenor_dates[i], r, a, sigma);
     return val;
 }
-
 __host__ __device__ inline float critical_rate_r_star(float T, const float* tenor_dates,
                                                        int n_tenors, const float* c,
                                                        const float* P0, const float* f0,
                                                        float a, float sigma){
+    constexpr float TOL = 1e-7f;
     float lo = -0.5f, hi = 0.5f;
     for(int iter = 0; iter < 100; iter++){
         float mid = 0.5f * (lo + hi);
         float val = swap_value_at_r(mid, T, tenor_dates, n_tenors, c, P0, f0, a, sigma);
+        if(fabsf(val - 1.0f) < TOL) return mid;
         if(val > 1.0f) lo = mid; else hi = mid;
     }
     return 0.5f * (lo + hi);
@@ -131,7 +132,7 @@ __host__ __device__ inline float analytical_swaption_volga(float T, const float*
 
         float P_0T     = o.P_T;
         float phi_h_sp = expf(-0.5f * (-o.h + o.sigma_p) * (-o.h + o.sigma_p))
-                       / sqrtf(2.0f * 3.14159265f);
+                       *  INV_SQRT_2PI;
 
         // Full dX_i/dσ = −X_i B_i Q_i,  Q_i = coeff B_i + dr*/dσ
         float Q_i        = coeff * B_T_Ti + dr_star_dsigma;

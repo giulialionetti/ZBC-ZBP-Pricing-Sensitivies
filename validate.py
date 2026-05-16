@@ -1,6 +1,6 @@
 import argparse
-import torch
-import torch.nn as nn
+import torch # type: ignore
+import torch.nn as nn # type: ignore
 import pandas as pd
 import numpy as np
 import os
@@ -16,12 +16,12 @@ args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}" + (f"  ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else ""))
 
-ckpt       = torch.load(args.model, map_location=device, weights_only=False)
+ckpt = torch.load(args.model, map_location=device, weights_only=False)
 INPUT_COLS = ckpt["input_cols"]
-X_mean     = ckpt["X_mean"].to(device)
-X_std      = ckpt["X_std"].to(device)
-SIGMA_IDX  = INPUT_COLS.index("sigma")
-R0_IDX     = INPUT_COLS.index("r0")
+X_mean = ckpt["X_mean"].to(device)
+X_std = ckpt["X_std"].to(device)
+SIGMA_IDX = INPUT_COLS.index("sigma")
+R0_IDX = INPUT_COLS.index("r0")
 
 class MLP(nn.Module):
     def __init__(self, n_in, n_hidden, n_layers):
@@ -72,7 +72,6 @@ def metrics(pred, true, name, threshold=1e-2):
     print(f"  {name}")
     print(f"    MAE         : {ae.mean():.6f}")
     print(f"    RMSE        : {np.sqrt((ae**2).mean()):.6f}")
-    print(f"    rel.MAE     : {re.mean():.2%}  (all samples)")
     if mask.sum() > 0:
         print(f"    rel.MAE     : {re[mask].mean():.2%}  (on {mask.sum()} samples with |value| > {threshold})")
     print(f"    max |error| : {ae.max():.6f}")

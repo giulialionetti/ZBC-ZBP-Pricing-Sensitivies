@@ -11,7 +11,6 @@
         exit(1); \
     } \
 } while(0)
-
 __global__ void market_price(float* P0_sum,
                               curandState* states,
                               const float* d_drift,
@@ -20,10 +19,8 @@ __global__ void market_price(float* P0_sum,
                               int n_paths) {
     int path_id = blockDim.x * blockIdx.x + threadIdx.x;
 
-    __shared__ float s_P[N_MAT];
-    for (int m = threadIdx.x; m < N_MAT; m += blockDim.x)
-        s_P[m] = 0.0f;
-    __syncthreads();
+  
+    float local_P[N_MAT] = {};
 
     if (path_id < n_paths) {
         curandState local_state = states[path_id];
@@ -35,17 +32,36 @@ __global__ void market_price(float* P0_sum,
             float G = curand_normal(&local_state);
             evolve_short_rate(r, discount_integral, d_drift[i], G, p);
 
-            if ((i + 1) % SAVE_STRIDE == 0) {
-                atomicAdd(&s_P[maturity_index], expf(-discount_integral));
-                maturity_index++;
-            }
+            if ((i + 1) % SAVE_STRIDE == 0)
+                local_P[maturity_index++] = expf(-discount_integral);
         }
         states[path_id] = local_state;
     }
 
+    __shared__ float s_P[N_MAT][32];  
+
+    int lane   = threadIdx.x % 32;
+    int warp   = threadIdx.x / 32;
+    int nwarps = blockDim.x / 32;
+
+    
+    for (int m = 0; m < N_MAT; m++) {
+        float v = local_P[m];
+        for (int offset = 16; offset > 0; offset >>= 1)
+            v += __shfl_down_sync(0xffffffff, v, offset);
+        if (lane == 0) s_P[m][warp] = v;
+    }
     __syncthreads();
-    for (int m = threadIdx.x; m < N_MAT; m += blockDim.x)
-        atomicAdd(&P0_sum[m], s_P[m]);
+
+    // Step 2: first warp reduces across warp slots, then one atomicAdd per maturity
+    if (warp == 0) {
+        for (int m = 0; m < N_MAT; m++) {
+            float v = (lane < nwarps) ? s_P[m][lane] : 0.0f;
+            for (int offset = 16; offset > 0; offset >>= 1)
+                v += __shfl_down_sync(0xffffffff, v, offset);
+            if (lane == 0) atomicAdd(&P0_sum[m], v);
+        }
+    }
 }
 
 // Launch only — returns immediately, no sync.
